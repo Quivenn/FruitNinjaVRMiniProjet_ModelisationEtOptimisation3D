@@ -1,10 +1,12 @@
 using System.Collections;
 using UnityEngine;
-using UnityEngine.UI;
-using TMPro;
 using UnityEngine.InputSystem;
 using UnityEngine.XR;
+using TMPro;
 
+/// <summary>
+/// G√®re une partie : d√©marrage (coupe du StartFruit), chrono, score, fin de partie et meilleur score.
+/// </summary>
 public class GameManager : MonoBehaviour
 {
     [Header("References")]
@@ -16,15 +18,27 @@ public class GameManager : MonoBehaviour
 
     [Header("Game settings")]
     public float gameDuration = 60f;
+    [Tooltip("Points retir√©s quand une bombe est touch√©e.")]
+    public int bombPenalty = 3;
+
+    [Header("High Score UI")]
+    public TextMeshProUGUI highScoreText;
+
+    private const string HighScoreKey = "HighScore";
 
     private bool gameStarted = false;
     private int score = 0;
     private float timeRemaining;
     private Coroutine timerCoroutine;
+    private GameObject currentStartFruit;
 
-    [Header("High Score UI")]
-    public TextMeshProUGUI highScoreText;
+    // Bouton A (manette droite) : d√©tection d'appui sur front montant
+    private UnityEngine.XR.InputDevice rightHand;
+    private bool previousPrimaryButton;
 
+    private readonly WaitForSeconds oneSecond = new WaitForSeconds(1f);
+
+    public bool IsGameRunning => gameStarted;
 
     private void Start()
     {
@@ -37,31 +51,42 @@ public class GameManager : MonoBehaviour
 
         if (startFruitSpawnPoint == null)
         {
-            GameObject found = GameObject.Find("StartFruit") ?? GameObject.Find("StartFruitSpawn");
+            GameObject found = GameObject.Find("StartFruitSpawnPoint");
+            if (found == null) found = GameObject.Find("StartFruitSpawn");
             if (found != null)
                 startFruitSpawnPoint = found.transform;
         }
 
+        if (spawner == null)
+            spawner = FindAnyObjectByType<FruitSpawnerManager>();
+
         UpdateScoreUI();
         UpdateTimerUI();
         UpdateHighScoreUI();
-
     }
 
-    void Update()
+    private void Update()
     {
-        if (Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame)
-        {
-            Debug.Log("Touche R pressÈe - Respawn StartFruit");
-            RespawnStartFruit();
-        }
+        // Respawn du StartFruit uniquement hors partie, sur un appui (et non √† chaque frame).
+        bool keyboardRespawn = Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame;
+        bool controllerRespawn = PrimaryButtonPressedThisFrame();
 
-        UnityEngine.XR.InputDevice rightHand = UnityEngine.XR.InputDevices.GetDeviceAtXRNode(UnityEngine.XR.XRNode.RightHand);
-        bool buttonPressed = false;
-        if (rightHand.TryGetFeatureValue(UnityEngine.XR.CommonUsages.primaryButton, out buttonPressed) && buttonPressed)
-        {
+        if (!gameStarted && (keyboardRespawn || controllerRespawn))
             RespawnStartFruit();
-        }
+    }
+
+    private bool PrimaryButtonPressedThisFrame()
+    {
+        if (!rightHand.isValid)
+            rightHand = InputDevices.GetDeviceAtXRNode(XRNode.RightHand);
+
+        bool pressed = rightHand.isValid
+                       && rightHand.TryGetFeatureValue(UnityEngine.XR.CommonUsages.primaryButton, out bool value)
+                       && value;
+
+        bool pressedThisFrame = pressed && !previousPrimaryButton;
+        previousPrimaryButton = pressed;
+        return pressedThisFrame;
     }
 
     public void StartGame()
@@ -86,123 +111,91 @@ public class GameManager : MonoBehaviour
 
     private IEnumerator GameTimer()
     {
-        while (gameStarted && timeRemaining > 0)
+        while (gameStarted && timeRemaining > 0f)
         {
-            yield return new WaitForSeconds(1f);
+            yield return oneSecond;
             timeRemaining -= 1f;
             UpdateTimerUI();
         }
 
-        if (gameStarted)
-        {
-            Debug.Log("Timer terminÈ - appel de EndGame()");
-            EndGame();
-        }
-
         timerCoroutine = null;
+
+        if (gameStarted)
+            EndGame();
     }
 
     public void EndGame()
     {
         if (!gameStarted) return;
         gameStarted = false;
-        Debug.Log("Fin de partie : chrono terminÈ");
+        Debug.Log("Fin de partie : chrono termin√©");
 
         if (spawner != null)
-            spawner.StopSpawning();
-
-        foreach (var rb in FindObjectsByType<Rigidbody>(FindObjectsSortMode.None))
         {
-            if (rb.CompareTag("Sliceable") || rb.CompareTag("Bomb"))
-                Destroy(rb.gameObject);
+            spawner.StopSpawning();
+            spawner.ClearActiveObjects(includeBombs: true);
         }
 
         RespawnStartFruit();
 
-
-        // Mise ‡ jour du High Score
-        int previousHighScore = PlayerPrefs.GetInt("HighScore", 0);
+        // Mise √† jour du meilleur score
+        int previousHighScore = PlayerPrefs.GetInt(HighScoreKey, 0);
         if (score > previousHighScore)
         {
-            PlayerPrefs.SetInt("HighScore", score);
+            PlayerPrefs.SetInt(HighScoreKey, score);
             PlayerPrefs.Save();
-            Debug.Log("Nouveau High Score enregistrÈ : " + score);
+            Debug.Log("Nouveau meilleur score enregistr√© : " + score);
         }
         UpdateHighScoreUI();
-
     }
 
     public void RespawnStartFruit()
     {
-        GameObject existingStart = GameObject.FindWithTag("StartButton");
-        if (existingStart != null)
-        {
-            Destroy(existingStart);
-            Debug.Log("Ancien StartFruit supprimÈ avant respawn.");
-        }
+        // Supprime l'ancien StartFruit (celui pos√© dans la sc√®ne au d√©part, ou le dernier instanci√©)
+        if (currentStartFruit == null)
+            currentStartFruit = GameObject.FindWithTag("StartButton");
+        if (currentStartFruit != null)
+            Destroy(currentStartFruit);
 
-        // VÈrifie que le spawn point est valide
-        if (startFruitSpawnPoint == null)
-        {
-            // Essaie de le retrouver dans la scËne
-            GameObject foundSpawn = GameObject.Find("StartFruitSpawnPoint");
-            if (foundSpawn != null)
-            {
-                startFruitSpawnPoint = foundSpawn.transform;
-                Debug.Log("StartFruitSpawnPoint retrouvÈ automatiquement.");
-            }
-            else
-            {
-                Debug.LogWarning("Aucun StartFruitSpawnPoint trouvÈ, utilisation position par dÈfaut.");
-            }
-        }
-
-        // VÈrifie que le prefab est valide
         if (startFruitPrefab == null)
         {
-            Debug.LogWarning("StartFruitPrefab manquant, tentative de chargement depuis Resources...");
             startFruitPrefab = Resources.Load<GameObject>("StartFruit");
-
             if (startFruitPrefab == null)
             {
-                Debug.LogError("Aucun StartFruit trouvÈ !");
+                Debug.LogError("Aucun StartFruit trouv√© !");
                 return;
             }
         }
 
-        // Calcule la position finale
-        Vector3 spawnPos = startFruitSpawnPoint != null
-            ? startFruitSpawnPoint.position
-            : new Vector3(0, 1.2f, 0);
+        Vector3 spawnPos = startFruitSpawnPoint != null ? startFruitSpawnPoint.position : new Vector3(0f, 1.2f, 0f);
+        Quaternion spawnRot = startFruitSpawnPoint != null ? startFruitSpawnPoint.rotation : Quaternion.identity;
 
-        Quaternion spawnRot = startFruitSpawnPoint != null
-    ? startFruitSpawnPoint.rotation
-    : Quaternion.identity;
-
-        Instantiate(startFruitPrefab, spawnPos, spawnRot);
-
-        Debug.Log($"StartFruit respawnÈ ‡ {spawnPos}");
+        currentStartFruit = Instantiate(startFruitPrefab, spawnPos, spawnRot);
     }
 
+    /// <summary>Appel√© par un sabre quand un fruit (normal ou dor√©) est coup√©.</summary>
+    public void OnFruitSliced(GameObject fruit)
+    {
+        AddScore(spawner != null ? spawner.GetPointsFor(fruit) : 1);
+    }
+
+    /// <summary>Appel√© par un sabre quand une bombe est touch√©e : p√©nalit√© + fruits en vol supprim√©s.</summary>
+    public void OnBombHit()
+    {
+        AddScore(-bombPenalty);
+        ResetFruitsOnBomb();
+    }
 
     public void AddScore(int amount)
     {
-        score += amount;
-
-        if (score < 0)
-            score = 0;
-
+        score = Mathf.Max(0, score + amount);
         UpdateScoreUI();
     }
 
-
     public void ResetFruitsOnBomb()
     {
-        foreach (var rb in FindObjectsOfType<Rigidbody>())
-        {
-            if (rb.CompareTag("Sliceable"))
-                Destroy(rb.gameObject);
-        }
+        if (spawner != null)
+            spawner.ClearActiveObjects(includeBombs: false);
     }
 
     private void UpdateScoreUI()
@@ -214,32 +207,12 @@ public class GameManager : MonoBehaviour
     private void UpdateTimerUI()
     {
         if (timerText != null)
-            timerText.text = "Temps : " + Mathf.Ceil(timeRemaining);
+            timerText.text = "Temps : " + Mathf.CeilToInt(timeRemaining);
     }
 
     private void UpdateHighScoreUI()
     {
         if (highScoreText != null)
-        {
-            int high = PlayerPrefs.GetInt("HighScore", 0);
-            highScoreText.text = "Meilleur score : " + high;
-        }
+            highScoreText.text = "Meilleur score : " + PlayerPrefs.GetInt(HighScoreKey, 0);
     }
-
-    private bool TagExists(string tag)
-    {
-        try
-        {
-            // Unity lËve une exception si le tag n'existe pas
-            GameObject temp = new GameObject();
-            bool hasTag = temp.CompareTag(tag);
-            Destroy(temp);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
 }

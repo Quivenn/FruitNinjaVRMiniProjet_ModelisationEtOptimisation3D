@@ -23,6 +23,7 @@ public class VelocityEstimator : MonoBehaviour
     private int sampleCount;
     private Vector3[] velocitySamples;
     private Vector3[] angularVelocitySamples;
+    private static readonly WaitForEndOfFrame EndOfFrame = new WaitForEndOfFrame(); // évite une allocation par frame
 
 
     //-------------------------------------------------
@@ -126,7 +127,10 @@ public class VelocityEstimator : MonoBehaviour
         Quaternion previousRotation = transform.rotation;
         while (true)
         {
-            yield return new WaitForEndOfFrame();
+            yield return EndOfFrame;
+
+            if (Time.deltaTime <= 0f)
+                continue;
 
             float velocityFactor = 1.0f / Time.deltaTime;
 
